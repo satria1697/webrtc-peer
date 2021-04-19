@@ -12,6 +12,9 @@
       Muted
     </button>
     <div v-for="(item, index) in video.remote" :key="index">
+      <p>{{ index }}</p>
+      <p>{{ item.srcObject }}</p>
+      <p>{{ video.remote }}</p>
       <video :srcObject="item.srcObject" autoplay></video>
     </div>
   </div>
@@ -30,58 +33,171 @@ export default {
         },
         remote: [],
       },
-      peers: {},
       config: {
-        audio: false,
-        video: {
-          width: {
-            max: 600,
-          },
-          height: {
-            max: 600,
-          },
-        },
+        audio: true,
+        // video: {
+        //   width: {
+        //     max: 600,
+        //   },
+        //   height: {
+        //     max: 600,
+        //   },
+        // },
       },
       configuration: {
         iceServers: [
           {
-            urls: "stun:stun.l.google.com:19302",
-          },
-          // public turn server from https://gist.github.com/sagivo/3a4b2f2c7ac6e1b5267c2f1f59ac6c6b
-          // set your own servers here
-          {
-            url: "turn:192.158.29.39:3478?transport=udp",
-            credential: "JZEOEt2V3Qb0y27GRntt2u2PAYA=",
-            username: "28224511:1379330808",
+            urls: "stun:ice.suiteapp.id:3478",
           },
         ],
       },
+      peers: [],
+      peer: "",
+      phidUser: "PHID-USER-l6a2gknezsmy6oewxiqf",
+      position: "PHID-CONP-6k2gyhstfqjs6pidgdpq",
     };
   },
-  sockets: {
-    initReceive(socket_id) {
-      console.log("INIT RECEIVE " + socket_id);
-      this.addPeer(socket_id, false);
+  created() {
+    const pc = new RTCPeerConnection(this.configuration);
+    const ws = new WebSocket(
+      `wss://ice.suiteapp.id:8443/websocket/suite-${this.position}`
+    );
+    const wsDashboard = new WebSocket("wss://dashboard.refactory.id:22280/");
 
-      this.$socket.emit("initSend", socket_id);
-    },
-    initSend(socket_id) {
-      console.log("INIT SEND " + socket_id);
-      this.addPeer(socket_id, true);
-    },
-    removePeer(socket_id) {
-      console.log("removing peer " + socket_id);
-      this.removePeer(socket_id);
-    },
-    disconnect() {
-      console.log("GOT DISCONNECTED");
-      for (let socket_id in this.peers) {
-        this.removePeer(socket_id);
+    wsDashboard.onopen = () => {
+      wsDashboard.send(
+        JSON.stringify({
+          command: "subscribe",
+          data: [this.phidUser, this.position],
+        })
+      );
+    };
+
+    pc.ontrack = (event) => {
+      event.streams[0].getTracks().forEach((track) => {
+        const remoteStream = new MediaStream();
+        remoteStream.addTrack(track);
+        this.video.remote.push({
+          muted: false,
+          srcObject: remoteStream,
+        });
+      });
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log("connection state", pc.connectionState);
+    };
+
+    pc.onicecandidate = (event) => {
+      console.log("onicecandidate", event);
+      if (event.candidate) {
+        const iceCandidate = event.candidate;
+        this.peers.forEach((data) => {
+          const candidate = new RTCIceCandidate(iceCandidate);
+          ws.send(
+            JSON.stringify({
+              to: data,
+              event: "candidate",
+              data: {
+                id: candidate.sdpMid,
+                label: candidate.sdpMLineIndex,
+                candidate: candidate.candidate,
+              },
+            })
+          );
+        });
       }
-    },
-    signal(data) {
-      this.peers[data.socket_id].signal(data.signal);
-    },
+    };
+
+    ws.onopen = () => {
+      ws.send(
+        JSON.stringify({
+          event: "authenticate",
+          data: {
+            password: "tuuuuuurn",
+            username: this.phidUser,
+          },
+        })
+      );
+      ws.onmessage = async (event) => {
+        const { data } = event;
+        const jsonData = JSON.parse(data);
+        if (jsonData.data["peer_id"]) {
+          const found =
+            this.peers.findIndex(
+              (data) => jsonData.data["peer_id"] === data
+            ) === -1;
+          if (found) {
+            this.peers.push(jsonData.data["peer_id"]);
+          }
+
+          // if (jsonData["event"] === "joined") {
+          const offerDescription = await pc.createOffer();
+          await pc.setLocalDescription(offerDescription);
+
+          const offer = {
+            sdp: offerDescription.sdp,
+            type: offerDescription.type,
+          };
+
+          this.peers.forEach((peer) => {
+            ws.send(
+              JSON.stringify({
+                event: "offer",
+                to: peer,
+                data: offer,
+              })
+            );
+          });
+          // }
+        }
+        if (jsonData["event"]) {
+          // offer
+          if (jsonData["event"] === "offer") {
+            if (this.peers.findIndex((data) => jsonData.from === data) === -1)
+              this.peers.push(jsonData.from);
+
+            console.log("connection state", pc.connectionState);
+            const remoteDescription = new RTCSessionDescription(jsonData.data);
+            await pc.setRemoteDescription(remoteDescription);
+
+            const answerDescription = await pc.createAnswer();
+            await pc.setLocalDescription(answerDescription);
+            this.peers.forEach((data) => {
+              const answer = {
+                sdp: answerDescription.sdp,
+                type: answerDescription.type,
+              };
+              ws.send(
+                JSON.stringify({
+                  event: "answer",
+                  to: data,
+                  data: answer,
+                })
+              );
+            });
+          }
+
+          // candidate
+          if (jsonData["event"] === "candidate") {
+            if (this.peers.findIndex((data) => jsonData.from === data) === -1)
+              this.peers.push(jsonData.from);
+
+            const { data } = jsonData;
+            const iceCandidate = {
+              candidate: data.candidate,
+              sdpMid: data.id,
+              sdpMLineIndex: data.label,
+            };
+            await pc.addIceCandidate(new RTCIceCandidate(iceCandidate));
+          }
+          if (jsonData["event"] === "joined") {
+            console.log("user joined");
+            this.peers.push(jsonData.data["peer_id"]);
+          }
+        }
+      };
+    };
   },
   mounted() {
     navigator.mediaDevices
@@ -89,7 +205,6 @@ export default {
       .then((res) => {
         this.video.main.srcObject = res;
         this.video.main.muted = true;
-        console.log(res);
       })
       .catch((err) => {
         console.log(err);
