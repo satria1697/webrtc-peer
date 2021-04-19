@@ -88,28 +88,27 @@ export default {
       console.log("connection state", pc.connectionState);
     };
 
-    pc.onicecandidate = (event) => {
-      console.log("onicecandidate", event);
-      if (event.candidate) {
-        const iceCandidate = event.candidate;
-        this.peers.forEach((data) => {
-          const candidate = new RTCIceCandidate(iceCandidate);
-          ws.send(
-            JSON.stringify({
-              to: data,
-              event: "candidate",
-              data: {
-                id: candidate.sdpMid,
-                label: candidate.sdpMLineIndex,
-                candidate: candidate.candidate,
-              },
-            })
-          );
-        });
-      }
-    };
-
     ws.onopen = () => {
+      pc.onicecandidate = (event) => {
+        console.log("onicecandidate", event);
+        if (event.candidate) {
+          const iceCandidate = event.candidate;
+          this.peers.forEach((data) => {
+            const candidate = new RTCIceCandidate(iceCandidate);
+            ws.send(
+              JSON.stringify({
+                to: data,
+                event: "candidate",
+                data: {
+                  id: candidate.sdpMid,
+                  label: candidate.sdpMLineIndex,
+                  candidate: candidate.candidate,
+                },
+              })
+            );
+          });
+        }
+      };
       ws.send(
         JSON.stringify({
           event: "authenticate",
