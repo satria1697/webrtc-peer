@@ -3,8 +3,8 @@
     <span>Web RTC</span>
     <div class="bg-black" style="height: 200px; width: 300px"></div>
     <audio
-      :srcObject="video.main.srcObject"
-      :muted="video.main.muted"
+      :srcObject="audioSource.main.srcObject"
+      :muted="audioSource.main.muted"
       class="rounded-md"
       autoplay
       controls
@@ -12,19 +12,17 @@
     <button class="py-2 px-3 bg-blue-700 rounded-md" @click="handleMute">
       Muted
     </button>
-    <div v-for="(item, index) in video.remote" :key="index">
+    <div v-for="(item, index) in audioSource.remote" :key="index">
       <audio :srcObject="item.srcObject" controls autoplay></audio>
     </div>
   </div>
 </template>
 
 <script>
-import SimplePeer from "simple-peer";
-
 export default {
   data() {
     return {
-      video: {
+      audioSource: {
         main: {
           srcObject: null,
           muted: true,
@@ -33,14 +31,6 @@ export default {
       },
       config: {
         audio: true,
-        // video: {
-        //   width: {
-        //     max: 600,
-        //   },
-        //   height: {
-        //     max: 600,
-        //   },
-        // },
       },
       configuration: {
         iceServers: [
@@ -55,209 +45,175 @@ export default {
         userPHID: "",
         connection: null,
       },
-      phidUser: "PHID-USER-gdhrsigm7vj22qqe5a47",
+      phidUser: "PHID-USER-lqsz5sgxnwwroo3ndorj",
       position: "PHID-CONP-2c6ri7vqzn2vgg6eqzor",
       pc: null,
-      ws: null
+      ws: null,
     };
   },
   mounted() {
-    // initiate audio
     navigator.mediaDevices
       .getUserMedia(this.config)
       .then((res) => {
-        this.video.main.srcObject = res;
-        this.video.main.muted = true;
-        res.getTracks().forEach((track) => {
-          this.pc.addTrack(track, res);
-        });
+        this.audioSource.main.srcObject = res;
+        this.audioSource.main.muted = true;
       })
       .catch((err) => {
         console.log(err);
         alert("cant open your webcam");
       });
-
-    this.pc = new RTCPeerConnection(this.configuration);
-    this.ws = new WebSocket(
-      `wss://ice.suiteapp.id:8443/websocket/suite-${this.position}`
-    );
-    const wsDashboard = new WebSocket("wss://dashboard.refactory.id:22280/");
-
-    wsDashboard.onopen = () => {
-      wsDashboard.send(
-        JSON.stringify({
-          command: "subscribe",
-          data: [this.phidUser, this.position],
-        })
-      );
-    };
-
-    this.pc.ontrack = (event) => {
-      console.log("on track", event)
-      event.streams[0].getTracks().forEach((track) => {
-        console.log("remote stream", track);
-        const remoteStream = new MediaStream();
-        remoteStream.addTrack(track);
-        this.video.remote.push({
-          muted: false,
-          srcObject: remoteStream,
-        });
-      });
-    };
-
-    this.pc.onconnectionstatechange = () => {
-      console.log("connection state", this.pc.connectionState);
-    };
-
-    this.ws.onopen = () => {
-      // this.pc.onicecandidate = async (event) => {
-      //   console.log(event);
-      //   if (event.candidate) {
-      //     const data = event.candidate;
-      //     this.ws.send(
-      //       JSON.stringify({
-      //         candidate: data.candidate,
-      //         id: data.sdpMid,
-      //         label: data.sdpMLineIndex,
-      //       })
-      //     );
-      //   }
-      // };
-
-      // first join page
-      this.ws.send(
-        JSON.stringify({
-          event: "authenticate",
-          data: {
-            password: "tuuuuuurn",
-            username: this.phidUser,
-          },
-        })
-      );
-
-      this.ws.onmessage = async (event) => {
-        const { data } = event;
-        const jsonData = JSON.parse(data);
-
-        if (jsonData.data["peer_id"]) {
-          if (jsonData.data["username"]) {
-            const found =
-              this.peers.findIndex(
-                (data) => jsonData.data["peer_id"] === data
-              ) === -1;
-            if (found) {
-              this.peers.push({
-                peer: jsonData.data["peer_id"],
-                userPHID: jsonData.data["username"],
-              });
-              console.log("new user joined");
-            }
-          } else {
-            this.peer = {
-              peer: jsonData.data["peer_id"],
-              userPHID: this.phidUser,
-            };
-          }
-
-          // make offer
-          // if (jsonData["event"] === "joined") {
-          console.log("make offer for ", jsonData.data["peer_id"]);
-          const offerDescription = await this.pc.createOffer();
-          await this.pc.setLocalDescription(offerDescription);
-
-          const offer = {
-            sdp: offerDescription.sdp,
-            type: offerDescription.type,
-          };
-
-          this.ws.send(
-            JSON.stringify({
-              event: "offer",
-              to: jsonData.data["peer_id"],
-              data: offer,
-            })
-          );
-          // }
-        }
-        if (jsonData["event"]) {
-          // answer
-          if (jsonData["event"] === "offer") {
-            console.log("make answer to peer", jsonData.from);
-            const remoteDescription = new RTCSessionDescription(jsonData.data);
-            await this.pc.setRemoteDescription(remoteDescription);
-
-            const answerDescription = await this.pc.createAnswer();
-            await this.pc.setLocalDescription(answerDescription);
-            const answer = {
-              sdp: answerDescription.sdp,
-              type: answerDescription.type,
-            };
-            this.ws.send(
-              JSON.stringify({
-                event: "answer",
-                to: jsonData.from,
-                data: answer,
-              })
-            );
-          }
-
-          // add ice candidate
-          if (jsonData["event"] === "candidate") {
-            const { data } = jsonData;
-            const iceCandidate = {
-              candidate: data.candidate,
-              sdpMid: data.id,
-              sdpMLineIndex: data.label,
-            };
-            await this.pc.addIceCandidate(new RTCIceCandidate(iceCandidate));
-          }
-        }
-      };
-    };
+    this.connectSocket();
+    // connect to phab dashboard
+    // const wsDashboard = new WebSocket("wss://dashboard.refactory.id:22280/");
+    // wsDashboard.onopen = () => {
+    //   wsDashboard.send(
+    //     JSON.stringify({
+    //       command: "subscribe",
+    //       data: [this.phidUser, this.position, 'lobby'],
+    //     })
+    //   );
+    // };
   },
   methods: {
-    handleMute() {
-      this.video.main.muted = !this.video.main.muted;
-    },
-    removePeer(socket_id) {
-      let videoEl = document.getElementById(socket_id);
-      if (videoEl) {
-        const tracks = videoEl.srcObject.getTracks();
-
-        tracks.forEach(function (track) {
-          track.stop();
-        });
-
-        videoEl.srcObject = null;
-        videoEl.parentNode.removeChild(videoEl);
+    initRTC(peerId, peerPHID, isInitiator) {
+      console.log("Create connection for ", peerId);
+      const pc = new RTCPeerConnection(this.configuration);
+      pc.onicecandidate = this.handleIceCandidate(peerId);
+      pc.ontrack = this.handleRemoteStream(peerId);
+      pc.addStream(this.audioSource.main.srcObject);
+      this.peers[peerId] = { pc };
+      this.peers[peerId].state = "connected";
+      this.peers[peerId].phid = peerPHID;
+      if (peerPHID === this.phidUser) {
+        this.peer = pc;
+        this.currentPeer = peerId;
       }
-      if (this.peers[socket_id]) this.peers[socket_id].destroy();
-      delete this.peers[socket_id];
+      if (isInitiator) {
+        this.createOffer(peerId);
+      }
     },
-    addPeer(socket_id, am_initiator) {
-      this.peers[socket_id] = new SimplePeer({
-        initiator: am_initiator,
-        stream: this.video.main.srcObject,
-        config: this.configuration,
-      });
-
-      this.peers[socket_id].on("signal", (data) => {
-        this.$socket.emit("signal", {
-          signal: data,
-          socket_id: socket_id,
+    handleIceCandidate(peerId) {
+      return (event) => {
+        if (event.candidate) {
+          const iceCandidate = event.candidate;
+          const data = {
+            candidate: iceCandidate.candidate,
+            id: iceCandidate.sdpMid,
+            label: iceCandidate.sdpMLineIndex,
+          };
+          this.ws.send(
+            JSON.stringify({
+              data: data,
+              event: "candidate",
+              to: peerId,
+            })
+          );
+        }
+      };
+    },
+    handleRemoteStream(payload) {
+      return (event) => {
+        event.streams[0].getTracks().forEach((track) => {
+          console.log("remote stream", track);
+          const remoteStream = new MediaStream();
+          remoteStream.addTrack(track);
+          this.audioSource.remote.push({
+            muted: false,
+            srcObject: remoteStream,
+            peer: payload,
+          });
         });
+      };
+    },
+    async createOffer(peerId) {
+      const pc = this.peers[peerId].pc;
+      const sessionDescription = await pc.createOffer();
+      await pc.setLocalDescription(sessionDescription);
+      this.ws.send(
+        JSON.stringify({
+          event: "offer",
+          to: peerId,
+          data: sessionDescription,
+        })
+      );
+    },
+    async handleOffer(payload) {
+      this.initRTC(payload.from, null, false);
+      const pc = this.peers[payload.from].pc;
+      await pc.setRemoteDescription(new RTCSessionDescription(payload.data));
+      const sessionDescription = await pc.createAnswer();
+      await pc.setLocalDescription(sessionDescription);
+      this.ws.send(
+        JSON.stringify({
+          event: "answer",
+          data: sessionDescription,
+          to: payload.from,
+        })
+      );
+    },
+    handleCandidate(payload) {
+      const candidate = new RTCIceCandidate({
+        sdpMLineIndex: payload.data.label,
+        candidate: payload.data.candidate,
       });
+      this.peers[payload.from].pc.addIceCandidate(candidate);
+    },
+    handleAnswer(payload) {
+      this.peers[payload.from].pc.setRemoteDescription(
+        new RTCSessionDescription(payload.data)
+      );
+    },
+    handleLeave(payload) {
+      if (this.peers[payload["peer_id"]]) {
+        this.peers[payload["peer_id"]].state = "connecting";
+        if (this.peers[payload["peer_id"]].pc) {
+          this.peers[payload["peer_id"]].pc.close();
+        }
+        const idx = this.peers.findIndex(
+          (data) => data.peer === payload["peer_id"]
+        );
+        this.peers.slice(idx, 1);
+        delete this.peers[payload["peer_id"]];
+      }
+    },
+    connectSocket() {
+      this.ws = new WebSocket(
+        `wss://ice.suiteapp.id:8443/websocket/suite-${this.position}`
+      );
+      this.ws.onopen = () => {
+        // first join page
+        this.ws.send(
+          JSON.stringify({
+            event: "authenticate",
+            data: {
+              password: "tuuuuuurn",
+              username: this.phidUser,
+            },
+          })
+        );
 
-      this.peers[socket_id].on("stream", (stream) => {
-        let newVid = document.createElement("video");
-        newVid.srcObject = stream;
-        newVid.id = socket_id;
-        newVid.playsinline = false;
-        newVid.autoplay = true;
-        newVid.className = "vid";
-        console.log(newVid.srcObject);
-        this.video.remote.push({ srcObject: stream });
-      });
+        this.ws.onmessage = (event) => {
+          const { data } = event;
+          const jsonData = JSON.parse(data);
+          if (jsonData.data["peer_id"]) {
+            this.peer.peer = jsonData.data["peer_id"];
+            this.initRTC(this.peer.peer, this.phidUser, true);
+          }
+          if (jsonData["event"] === "offer") {
+            this.handleOffer(jsonData);
+          }
+          if (jsonData["event"] === "candidate") {
+            this.handleCandidate(jsonData);
+          }
+          if (jsonData["event"] === "answer") {
+            this.handleAnswer(jsonData);
+          }
+          if (jsonData["event"] === "leave") {
+            this.handleLeave(jsonData);
+          }
+        };
+      };
+      this.ws.onclose = () => this.connectSocket();
     },
   },
 };
