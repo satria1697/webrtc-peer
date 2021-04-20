@@ -110,19 +110,19 @@ export default {
     };
 
     this.ws.onopen = () => {
-      this.pc.onicecandidate = async (event) => {
-        console.log(event);
-        if (event.candidate) {
-          const data = event.candidate;
-          this.ws.send(
-            JSON.stringify({
-              candidate: data.candidate,
-              id: data.sdpMid,
-              label: data.sdpMLineIndex,
-            })
-          );
-        }
-      };
+      // this.pc.onicecandidate = async (event) => {
+      //   console.log(event);
+      //   if (event.candidate) {
+      //     const data = event.candidate;
+      //     this.ws.send(
+      //       JSON.stringify({
+      //         candidate: data.candidate,
+      //         id: data.sdpMid,
+      //         label: data.sdpMLineIndex,
+      //       })
+      //     );
+      //   }
+      // };
 
       // first join page
       this.ws.send(
