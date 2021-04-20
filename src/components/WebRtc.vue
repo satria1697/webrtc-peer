@@ -2,20 +2,18 @@
   <div>
     <span>Web RTC</span>
     <div class="bg-black" style="height: 200px; width: 300px"></div>
-    <video
+    <audio
       :srcObject="video.main.srcObject"
       :muted="video.main.muted"
       class="rounded-md"
       autoplay
-    ></video>
+      controls
+    ></audio>
     <button class="py-2 px-3 bg-blue-700 rounded-md" @click="handleMute">
       Muted
     </button>
     <div v-for="(item, index) in video.remote" :key="index">
-      <p>{{ index }}</p>
-      <p>{{ item.srcObject }}</p>
-      <p>{{ video.remote }}</p>
-      <video :srcObject="item.srcObject" autoplay></video>
+      <audio :srcObject="item.srcObject" controls autoplay></audio>
     </div>
   </div>
 </template>
@@ -51,15 +49,36 @@ export default {
           },
         ],
       },
-      peers: [],
-      peer: "",
-      phidUser: "PHID-USER-l6a2gknezsmy6oewxiqf",
-      position: "PHID-CONP-6k2gyhstfqjs6pidgdpq",
+      peers: [], //peer-id, userphid, rtconnection(object)
+      peer: {
+        peer: "",
+        userPHID: "",
+        connection: null,
+      },
+      phidUser: "PHID-USER-gdhrsigm7vj22qqe5a47",
+      position: "PHID-CONP-2c6ri7vqzn2vgg6eqzor",
+      pc: null,
+      ws: null
     };
   },
-  created() {
-    const pc = new RTCPeerConnection(this.configuration);
-    const ws = new WebSocket(
+  mounted() {
+    // initiate audio
+    navigator.mediaDevices
+      .getUserMedia(this.config)
+      .then((res) => {
+        this.video.main.srcObject = res;
+        this.video.main.muted = true;
+        res.getTracks().forEach((track) => {
+          this.pc.addTrack(track, res);
+        });
+      })
+      .catch((err) => {
+        console.log(err);
+        alert("cant open your webcam");
+      });
+
+    this.pc = new RTCPeerConnection(this.configuration);
+    this.ws = new WebSocket(
       `wss://ice.suiteapp.id:8443/websocket/suite-${this.position}`
     );
     const wsDashboard = new WebSocket("wss://dashboard.refactory.id:22280/");
@@ -73,8 +92,10 @@ export default {
       );
     };
 
-    pc.ontrack = (event) => {
+    this.pc.ontrack = (event) => {
+      console.log("on track", event)
       event.streams[0].getTracks().forEach((track) => {
+        console.log("remote stream", track);
         const remoteStream = new MediaStream();
         remoteStream.addTrack(track);
         this.video.remote.push({
@@ -84,32 +105,27 @@ export default {
       });
     };
 
-    pc.onconnectionstatechange = () => {
-      console.log("connection state", pc.connectionState);
+    this.pc.onconnectionstatechange = () => {
+      console.log("connection state", this.pc.connectionState);
     };
 
-    ws.onopen = () => {
-      pc.onicecandidate = (event) => {
-        console.log("onicecandidate", event);
+    this.ws.onopen = () => {
+      this.pc.onicecandidate = async (event) => {
+        console.log(event);
         if (event.candidate) {
-          const iceCandidate = event.candidate;
-          this.peers.forEach((data) => {
-            const candidate = new RTCIceCandidate(iceCandidate);
-            ws.send(
-              JSON.stringify({
-                to: data,
-                event: "candidate",
-                data: {
-                  id: candidate.sdpMid,
-                  label: candidate.sdpMLineIndex,
-                  candidate: candidate.candidate,
-                },
-              })
-            );
-          });
+          const data = event.candidate;
+          this.ws.send(
+            JSON.stringify({
+              candidate: data.candidate,
+              id: data.sdpMid,
+              label: data.sdpMLineIndex,
+            })
+          );
         }
       };
-      ws.send(
+
+      // first join page
+      this.ws.send(
         JSON.stringify({
           event: "authenticate",
           data: {
@@ -118,97 +134,86 @@ export default {
           },
         })
       );
-      ws.onmessage = async (event) => {
+
+      this.ws.onmessage = async (event) => {
         const { data } = event;
         const jsonData = JSON.parse(data);
+
         if (jsonData.data["peer_id"]) {
-          const found =
-            this.peers.findIndex(
-              (data) => jsonData.data["peer_id"] === data
-            ) === -1;
-          if (found) {
-            this.peers.push(jsonData.data["peer_id"]);
+          if (jsonData.data["username"]) {
+            const found =
+              this.peers.findIndex(
+                (data) => jsonData.data["peer_id"] === data
+              ) === -1;
+            if (found) {
+              this.peers.push({
+                peer: jsonData.data["peer_id"],
+                userPHID: jsonData.data["username"],
+              });
+              console.log("new user joined");
+            }
+          } else {
+            this.peer = {
+              peer: jsonData.data["peer_id"],
+              userPHID: this.phidUser,
+            };
           }
 
+          // make offer
           // if (jsonData["event"] === "joined") {
-          const offerDescription = await pc.createOffer();
-          await pc.setLocalDescription(offerDescription);
+          console.log("make offer for ", jsonData.data["peer_id"]);
+          const offerDescription = await this.pc.createOffer();
+          await this.pc.setLocalDescription(offerDescription);
 
           const offer = {
             sdp: offerDescription.sdp,
             type: offerDescription.type,
           };
 
-          this.peers.forEach((peer) => {
-            ws.send(
-              JSON.stringify({
-                event: "offer",
-                to: peer,
-                data: offer,
-              })
-            );
-          });
+          this.ws.send(
+            JSON.stringify({
+              event: "offer",
+              to: jsonData.data["peer_id"],
+              data: offer,
+            })
+          );
           // }
         }
         if (jsonData["event"]) {
-          // offer
+          // answer
           if (jsonData["event"] === "offer") {
-            if (this.peers.findIndex((data) => jsonData.from === data) === -1)
-              this.peers.push(jsonData.from);
-
-            console.log("connection state", pc.connectionState);
+            console.log("make answer to peer", jsonData.from);
             const remoteDescription = new RTCSessionDescription(jsonData.data);
-            await pc.setRemoteDescription(remoteDescription);
+            await this.pc.setRemoteDescription(remoteDescription);
 
-            const answerDescription = await pc.createAnswer();
-            await pc.setLocalDescription(answerDescription);
-            this.peers.forEach((data) => {
-              const answer = {
-                sdp: answerDescription.sdp,
-                type: answerDescription.type,
-              };
-              ws.send(
-                JSON.stringify({
-                  event: "answer",
-                  to: data,
-                  data: answer,
-                })
-              );
-            });
+            const answerDescription = await this.pc.createAnswer();
+            await this.pc.setLocalDescription(answerDescription);
+            const answer = {
+              sdp: answerDescription.sdp,
+              type: answerDescription.type,
+            };
+            this.ws.send(
+              JSON.stringify({
+                event: "answer",
+                to: jsonData.from,
+                data: answer,
+              })
+            );
           }
 
-          // candidate
+          // add ice candidate
           if (jsonData["event"] === "candidate") {
-            if (this.peers.findIndex((data) => jsonData.from === data) === -1)
-              this.peers.push(jsonData.from);
-
             const { data } = jsonData;
             const iceCandidate = {
               candidate: data.candidate,
               sdpMid: data.id,
               sdpMLineIndex: data.label,
             };
-            await pc.addIceCandidate(new RTCIceCandidate(iceCandidate));
-          }
-          if (jsonData["event"] === "joined") {
-            console.log("user joined");
-            this.peers.push(jsonData.data["peer_id"]);
+            await this.pc.addIceCandidate(new RTCIceCandidate(iceCandidate));
           }
         }
       };
     };
-  },
-  mounted() {
-    navigator.mediaDevices
-      .getUserMedia(this.config)
-      .then((res) => {
-        this.video.main.srcObject = res;
-        this.video.main.muted = true;
-      })
-      .catch((err) => {
-        console.log(err);
-        alert("cant open your webcam");
-      });
   },
   methods: {
     handleMute() {
